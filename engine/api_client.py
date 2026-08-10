@@ -1,6 +1,7 @@
 import requests
 import os
 import time
+from datetime import datetime
 
 class FootballDataClient:
     def __init__(self):
@@ -28,7 +29,7 @@ class FootballDataClient:
     def get_matches_by_date(self, date_str):
         """
         Obtiene los partidos para una fecha específica.
-        Recorre todas las páginas si es necesario.
+        Recorre todas las páginas si es necesario y filtra por fecha exacta.
         
         Args:
             date_str: Fecha en formato YYYY-MM-DD
@@ -55,13 +56,16 @@ class FootballDataClient:
                 break
             
             matches = response.get("data", [])
-            all_matches.extend(matches)
+            
+            # Filtrar partidos por fecha exacta para evitar partidos de otros días
+            filtered_matches = self._filter_matches_by_date(matches, date_str)
+            all_matches.extend(filtered_matches)
             
             # Verificar si hay más páginas
             meta = response.get("meta", {})
             total_pages = meta.get("total_pages", 1)
             
-            print(f"[API] Página {page}/{total_pages} - {len(matches)} partidos")
+            print(f"[API] Página {page}/{total_pages} - {len(filtered_matches)} partidos (filtrados)")
             
             if page >= total_pages:
                 break
@@ -73,6 +77,41 @@ class FootballDataClient:
         print(f"[API] Se encontraron {len(all_matches)} partidos en total")
         
         return all_matches
+
+    def _filter_matches_by_date(self, matches, target_date):
+        """
+        Filtra los partidos para asegurar que solo devuelve los de la fecha exacta.
+        
+        Args:
+            matches: Lista de partidos
+            target_date: Fecha objetivo en formato YYYY-MM-DD
+            
+        Returns:
+            Lista filtrada de partidos
+        """
+        filtered = []
+        target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+        
+        for match in matches:
+            # Obtener la fecha del partido de diferentes formatos posibles
+            utc_date = match.get("utc_date") or match.get("date")
+            
+            if utc_date:
+                try:
+                    # Parsear la fecha (puede estar en formato ISO con timestamp)
+                    if "T" in utc_date:
+                        match_date_obj = datetime.fromisoformat(utc_date.replace("Z", "+00:00")).date()
+                    else:
+                        match_date_obj = datetime.strptime(utc_date, "%Y-%m-%d").date()
+                    
+                    # Solo incluir si la fecha coincide exactamente
+                    if match_date_obj == target_date_obj:
+                        filtered.append(match)
+                except ValueError:
+                    # Si no se puede parsear la fecha, incluir el partido
+                    filtered.append(match)
+        
+        return filtered
 
     def get_historical_team_data(self, team_id, match_date):
         """
