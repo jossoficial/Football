@@ -1,8 +1,15 @@
+"""Data processing utilities for feature extraction and preparation."""
+import numpy as np
+
 class DataProcessor:
+    """Enhanced data processor with momentum-aware feature engineering."""
+    
     def _value_or_none(self, value):
+        """Convert value to float or None."""
         return value if isinstance(value, (int, float)) else None
 
     def _extract_stats(self, match, stats, team_id):
+        """Extract individual match statistics for a team."""
         match = match or {}
         stats = stats or {}
 
@@ -29,6 +36,7 @@ class DataProcessor:
         }
 
     def calculate_averages(self, history, team_id):
+        """Calculate average statistics from match history."""
         if not history:
             return None
 
@@ -51,8 +59,17 @@ class DataProcessor:
             averages[m] = sums[m] / counts[m] if counts[m] > 0 else None
         
         return averages
+    
+    def calculate_recent_averages(self, history, team_id, recent_matches=3):
+        """Calculate averages for only recent matches (for momentum analysis)."""
+        if not history or len(history) < recent_matches:
+            return self.calculate_averages(history, team_id)
+        
+        recent_history = history[-recent_matches:]
+        return self.calculate_averages(recent_history, team_id)
 
     def prepare_features(self, team_a_avg, team_b_avg):
+        """Prepare combined feature vector from team averages."""
         combined = {}
         if not team_a_avg or not team_b_avg:
             return combined
@@ -64,3 +81,40 @@ class DataProcessor:
                 combined[f'{key}_max'] = max(team_a_avg[key], team_b_avg[key])
                 combined[f'{key}_total'] = team_a_avg[key] + team_b_avg[key]
         return combined
+    
+    def enrich_features_with_momentum(self, features, history_a, history_b, team_a_id, team_b_id):
+        """
+        Enrich feature set with momentum indicators.
+        
+        Args:
+            features: Base feature dictionary
+            history_a: Match history for team A
+            history_b: Match history for team B
+            team_a_id: Team A ID
+            team_b_id: Team B ID
+            
+        Returns:
+            Dictionary: Features enhanced with momentum indicators
+        """
+        enriched = features.copy()
+        
+        # Calculate recent vs overall averages for momentum signals
+        if history_a:
+            recent_a = self.calculate_recent_averages(history_a, team_a_id, recent_matches=3)
+            overall_a = self.calculate_averages(history_a, team_a_id)
+            
+            for metric in ['goals', 'corners', 'shots_on_target', 'total_shots']:
+                if recent_a.get(metric) and overall_a.get(metric) and overall_a[metric] > 0:
+                    momentum_ratio = recent_a[metric] / overall_a[metric]
+                    enriched[f'{metric}_a_momentum'] = round(momentum_ratio, 2)
+        
+        if history_b:
+            recent_b = self.calculate_recent_averages(history_b, team_b_id, recent_matches=3)
+            overall_b = self.calculate_averages(history_b, team_b_id)
+            
+            for metric in ['goals', 'corners', 'shots_on_target', 'total_shots']:
+                if recent_b.get(metric) and overall_b.get(metric) and overall_b[metric] > 0:
+                    momentum_ratio = recent_b[metric] / overall_b[metric]
+                    enriched[f'{metric}_b_momentum'] = round(momentum_ratio, 2)
+        
+        return enriched
