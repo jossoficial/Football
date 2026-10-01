@@ -1,0 +1,80 @@
+name: Automated Football Analytics Pipeline
+
+on:
+  # 1. Automatización: Se ejecuta solo todos los días a las 8:00 AM UTC
+  schedule:
+    - cron: '0 8 * * *'
+  
+  # 2. Ejecución Manual: Te permite forzar el análisis de un día específico desde la interfaz de GitHub
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Fecha a analizar (Dejar vacío para el día de hoy / YYYY-MM-DD)'
+        required: false
+        default: ''
+
+jobs:
+  scan_and_predict:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install requests
+
+      - name: Run Full Jornada Analytics
+        env:
+          THESTATSAPI_KEY: ${{ secrets.THESTATSAPI_KEY }}
+          ISPORTSAPI_KEY: ${{ secrets.ISPORTSAPI_KEY }}
+          INPUT_DATE: ${{ github.event.inputs.date }}
+        run: |
+          # 1. Determinar la fecha correcta a procesar (Manual o la del día de hoy en curso)
+          if [ -z "$INPUT_DATE" ]; then
+            TARGET_DATE=$(date +%Y-%m-%d)
+          else
+            TARGET_DATE="$INPUT_DATE"
+          fi
+          
+          echo "📆 Iniciando procesamiento para la fecha: $TARGET_DATE"
+          
+          # 2. Ejecutar el buscador de partidos y capturar los MATCH_IDs detectados en una variable de entorno
+          # Python guardará la lista de IDs en un archivo temporal llamado 'matches_found.txt'
+          python -c "
+          import os, sys, json
+          # Importamos o simulamos la ejecución de tu buscador nativo
+          from engine.match_finder import find_matches_by_date_list # Asegúrate de que retorne o guarde la lista
+          " || python -m engine.match_finder "$TARGET_DATE" > raw_output.txt
+
+          # 3. Extraer de forma inteligente todos los IDs numéricos generados por tu script 'match_finder'
+          # Buscamos patrones numéricos de IDs en la salida del buscador
+          MATCH_IDS=$(grep -oE '[0-9]{5,9}' raw_output.txt | sort -u)
+
+          if [ -z "$MATCH_IDS" ]; then
+            echo "⚠️ No se encontraron IDs de partidos válidos en la salida de match_finder para la fecha $TARGET_DATE."
+            cat raw_output.txt
+            exit 0
+          fi
+
+          echo "📊 Partidos detectados para procesar:"
+          echo "$MATCH_IDS"
+          print_line="========================================="
+
+          # 4. Bucle iterativo automático: Ejecuta main.py de forma consecutiva para cada partido encontrado
+          for MATCH_ID in $MATCH_IDS; do
+            echo -e "\n$print_line"
+            echo "🚀 PROCESANDO PARTIDO ID: $MATCH_ID"
+            echo -e "$print_line\n"
+            
+            # Ejecutamos tu proyección CatBoost + LSTM asignando el ID dinámicamente
+            MATCH_ID=$MATCH_ID python main.py
+          done
+          
+          echo -e "\n✅ Finalizado el procesamiento de la jornada completa de forma automatizada."
