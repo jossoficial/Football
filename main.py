@@ -172,10 +172,62 @@ def run_pipeline(match_id):
     print("\n💾 SALIDA JSON ESTRUCTURADA:")
     print(json.dumps(output_dict, indent=2, ensure_ascii=False))
 
+# ... (Todo tu código superior e importaciones permanecen exactamente igual)
+
 if __name__ == "__main__":
     M_ID = os.getenv('MATCH_ID')
-    if not M_ID or M_ID == '0':
-        print("❌ Error: Debes proporcionar un MATCH_ID.")
-        print("   Uso: MATCH_ID=123456 python main.py")
-    else:
+    
+    # 1. MODO INDIVIDUAL: Si especificas un MATCH_ID manual en las variables de Railway, analiza solo ese.
+    if M_ID and M_ID != '0':
+        print(f"Modo manual activado por variable de entorno.")
         run_pipeline(M_ID)
+        
+    # 2. MODO AUTOMÁTICO (ESCANEO DE JORNADA): Si no hay MATCH_ID, busca los partidos del día de forma autónoma.
+    else:
+        print("🤖 MATCH_ID no detectado. Iniciando Escaneo Automático de la jornada...")
+        
+        try:
+            # Inicializamos tu cliente existente
+            client = FootballDataClient()
+            
+            # Buscamos los partidos agendados para hoy a través de tu cliente
+            # NOTA: Asegúrate de que tu FootballDataClient tenga un método similar para listar partidos.
+            # Si se llama diferente (ej. get_today_fixtures), cambia el nombre aquí.
+            response_jornada = client.get_today_matches() 
+            
+            if not response_jornada:
+                print("⚠️ No se encontraron partidos programados o la API no devolvió datos para el día de hoy.")
+                sys.exit(0) # Termina de forma limpia para que Railway no lo marque como fallo catastrófico
+                
+            # Extraemos la lista de partidos de la respuesta
+            partidos = response_jornada.get('data', response_jornada) if isinstance(response_jornada, dict) else response_jornada
+            
+            if not isinstance(partidos, list) or len(partidos) == 0:
+                print("⚠️ El formato de respuesta de la jornada no contiene una lista válida de partidos.")
+                sys.exit(0)
+
+            print(f"📊 Se identificaron {len(partidos)} partidos para procesar hoy en los modelos analíticos.")
+            
+            # Bucle de escaneo iterativo automático
+            for idx, partido in enumerate(partidos, 1):
+                partido_id = partido.get('id')
+                if not partido_id:
+                    continue
+                    
+                print(f"\n🚀 [{idx}/{len(partidos)}] Procesando lote automático...")
+                try:
+                    # Ejecutamos tu pipeline completo (CatBoost + LSTM + EV) para cada ID encontrado
+                    run_pipeline(str(partido_id))
+                except Exception as e:
+                    print(f"❌ Error crítico procesando el partido ID {partido_id}: {str(e)}")
+                    print("⏩ Saltando al siguiente partido de la jornada...")
+                    continue
+                    
+            print("\n✅ Escaneo y procesamiento de la jornada finalizado exitosamente.")
+            
+        except AttributeError:
+            print("❌ Error: 'FootballDataClient' no tiene implementado un método para listar partidos del día.")
+            print("   Por favor, verifica los métodos de consulta masiva en 'engine/api_client.py'.")
+        except Exception as e:
+            print(f"❌ Error general durante el escaneo automático: {str(e)}")
+
