@@ -5,7 +5,7 @@ on:
   schedule:
     - cron: '0 8 * * *'
   
-  # 2. Ejecución Manual: Te permite forzar el análisis de un día específico desde la interfaz de GitHub
+  # 2. Ejecución Manual: Te permite forzar el análisis de una fecha específica desde la interfaz de GitHub
   workflow_dispatch:
     inputs:
       date:
@@ -35,6 +35,10 @@ jobs:
           THESTATSAPI_KEY: ${{ secrets.THESTATSAPI_KEY }}
           ISPORTSAPI_KEY: ${{ secrets.ISPORTSAPI_KEY }}
           INPUT_DATE: ${{ github.event.inputs.date }}
+          # Oculta las advertencias innecesarias de optimización y compilación de TensorFlow
+          TF_CPP_MIN_LOG_LEVEL: '2'
+          # Desactiva las alertas personalizadas del optimizador de operaciones integradas de Intel
+          TF_ENABLE_ONEDNN_OPTS: '0'
         run: |
           # 1. Determinar la fecha correcta a procesar (Manual o la del día de hoy en curso)
           if [ -z "$INPUT_DATE" ]; then
@@ -43,38 +47,43 @@ jobs:
             TARGET_DATE="$INPUT_DATE"
           fi
           
+          echo "========================================="
           echo "📆 Iniciando procesamiento para la fecha: $TARGET_DATE"
+          echo "========================================="
           
-          # 2. Ejecutar el buscador de partidos y capturar los MATCH_IDs detectados en una variable de entorno
-          # Python guardará la lista de IDs en un archivo temporal llamado 'matches_found.txt'
-          python -c "
-          import os, sys, json
-          # Importamos o simulamos la ejecución de tu buscador nativo
-          from engine.match_finder import find_matches_by_date_list # Asegúrate de que retorne o guarde la lista
-          " || python -m engine.match_finder "$TARGET_DATE" > raw_output.txt
+          # 2. Ejecutar el buscador de partidos y capturar la salida en un archivo temporal
+          python -m engine.match_finder "$TARGET_DATE" > raw_output.txt
 
-          # 3. Extraer de forma inteligente todos los IDs numéricos generados por tu script 'match_finder'
-          # Buscamos patrones numéricos de IDs en la salida del buscador
-          MATCH_IDS=$(grep -oE '[0-9]{5,9}' raw_output.txt | sort -u)
+          # 3. Extraer de forma inteligente todos los IDs numéricos generados por match_finder
+          MATCH_IDS=$(grep -oE '[0-9]{5,12}' raw_output.txt | sort -u)
 
           if [ -z "$MATCH_IDS" ]; then
             echo "⚠️ No se encontraron IDs de partidos válidos en la salida de match_finder para la fecha $TARGET_DATE."
+            echo "--- LOG DE SALIDA DE MATCH_FINDER ---"
             cat raw_output.txt
             exit 0
           fi
 
-          echo "📊 Partidos detectados para procesar:"
+          echo "📊 Partidos detectados en la jornada:"
           echo "$MATCH_IDS"
           print_line="========================================="
 
-          # 4. Bucle iterativo automático: Ejecuta main.py de forma consecutiva para cada partido encontrado
+          # 4. Bucle iterativo automático: Limpia ceros a la izquierda y ejecuta main.py de forma consecutiva
           for MATCH_ID in $MATCH_IDS; do
+            # Limpiamos el ID eliminando cualquier cero inicial sobrante para evitar Error 400 Bad Request
+            CLEAN_ID=$(echo "$MATCH_ID" | sed 's/^0*//')
+            
+            # Si por algún motivo el ID se queda vacío tras la limpieza, saltamos al siguiente
+            if [ -z "$CLEAN_ID" ]; then
+              continue
+            fi
+
             echo -e "\n$print_line"
-            echo "🚀 PROCESANDO PARTIDO ID: $MATCH_ID"
+            echo "🚀 PROCESANDO PARTIDO ID LIMPIO: $CLEAN_ID (Original en buscador: $MATCH_ID)"
             echo -e "$print_line\n"
             
-            # Ejecutamos tu proyección CatBoost + LSTM asignando el ID dinámicamente
-            MATCH_ID=$MATCH_ID python main.py
+            # Ejecutamos tu proyección CatBoost + LSTM asignando el ID dinámicamente ya corregido
+            MATCH_ID=$CLEAN_ID python main.py
           done
           
           echo -e "\n✅ Finalizado el procesamiento de la jornada completa de forma automatizada."
