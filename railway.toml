@@ -1,0 +1,21 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[[services]]
+name = "web"
+startCommand = "python main.py"
+numReplicas = 1
+
+[[services.envVariables]]
+name = "PORT"
+value = "$PORT"
+
+[[crons]]
+name = "daily-picks-update"
+schedule = "0 8 * * *"
+command = "python engine/update_picks.py"
+restartPolicy = "on_failure"
