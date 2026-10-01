@@ -14,6 +14,7 @@ def main():
         print("\nNo se encontraron partidos para esta fecha.")
         return
 
+    # Tabla visual para usuarios manuales
     print(f"\n{'MATCH_ID':<12} | {'HOME TEAM':<22} vs {'AWAY TEAM':<22}")
     print("-" * 65)
     
@@ -31,6 +32,8 @@ def main():
         
         if m_id:
             print(f"{str(m_id):<12} | {home_name:<22} vs {away_name:<22}")
+            # Línea estructurada para parsing automático en workflows
+            print(f"MATCH_ID:{m_id}")
             count += 1
             
     print("-" * 65)
