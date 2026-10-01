@@ -1,94 +1,89 @@
-name: Automated Football Analytics Pipeline
+name: Automated Football Analysis Pipeline
 
 on:
-  # 1. Automatización: Se ejecuta solo todos los días a las 8:00 AM UTC
   schedule:
-    - cron: '0 8 * * *'
-  
-  # 2. Ejecución Manual: Te permite forzar el análisis de una fecha específica desde la interfaz de GitHub
+    - cron: '0 8 * * *' # Todos los días a las 08:00 UTC
   workflow_dispatch:
     inputs:
       date:
-        description: 'Fecha a analizar (Dejar vacío para el día de hoy / YYYY-MM-DD)'
+        description: 'Fecha a procesar en formato YYYY-MM-DD (opcional). Si está vacío, se usará la fecha actual UTC.'
         required: false
-        default: ''
+
+env:
+  THESTATSAPI_KEY: ${{ secrets.THESTATSAPI_KEY }}
+  ISPORTSAPI_KEY: ${{ secrets.ISPORTSAPI_KEY }}
+  TF_CPP_MIN_LOG_LEVEL: '2'
+  TF_ENABLE_ONEDNN_OPTS: '0'
+  PYTHONUNBUFFERED: '1'
 
 jobs:
-  scan_and_predict:
+  run-analysis:
+    name: Run daily match discovery and analysis
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.x'
 
-      - name: Install dependencies
+      - name: Install dependencies (if requirements.txt exists)
+        shell: bash -l {0}
         run: |
-          pip install -r requirements.txt
-          pip install requests
-
-      - name: Run Full Jornada Analytics
-        env:
-          THESTATSAPI_KEY: ${{ secrets.THESTATSAPI_KEY }}
-          ISPORTSAPI_KEY: ${{ secrets.ISPORTSAPI_KEY }}
-          INPUT_DATE: ${{ github.event.inputs.date }}
-          # Oculta las advertencias innecesarias de optimización y compilación de TensorFlow
-          TF_CPP_MIN_LOG_LEVEL: '2'
-          # Desactiva las alertas personalizadas del optimizador de operaciones integradas de Intel
-          TF_ENABLE_ONEDNN_OPTS: '0'
-        run: |
-          # 1. Determinar la fecha correcta a procesar (Manual o la del día de hoy en curso)
-          if [ -z "$INPUT_DATE" ]; then
-            TARGET_DATE=$(date +%Y-%m-%d)
+          set -euo pipefail
+          if [ -f requirements.txt ]; then
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
           else
-            TARGET_DATE="$INPUT_DATE"
-          fi
-          
-          echo "========================================="
-          echo "📆 Iniciando procesamiento para la fecha: $TARGET_DATE"
-          echo "========================================="
-          
-          # 2. Ejecutar el buscador de partidos y capturar la salida en un archivo temporal
-          python -m engine.match_finder "$TARGET_DATE" > raw_output.txt 2>&1
-          
-          echo "--- SALIDA DE MATCH_FINDER ---"
-          cat raw_output.txt
-          echo "--- FIN SALIDA ---"
-
-          # 3. Extraer IDs de partidos buscando líneas con formato 'MATCH_ID:'
-          MATCH_IDS=$(grep -oP 'MATCH_ID:\K[0-9]+' raw_output.txt | sort -u)
-
-          if [ -z "$MATCH_IDS" ]; then
-            echo "⚠️ No se encontraron IDs de partidos válidos en la salida de match_finder para la fecha $TARGET_DATE."
-            echo "Esto puede significar que no hay partidos programados para esta fecha."
-            exit 0
+            echo "No requirements.txt found — skipping pip install"
           fi
 
-          echo "📊 Partidos detectados en la jornada:"
-          echo "$MATCH_IDS"
-          print_line="========================================="
+      - name: Discover matches and run analysis per MATCH_ID
+        id: run_pipeline
+        shell: bash -l {0}
+        run: |
+          set -euo pipefail
 
-          # 4. Bucle iterativo automático: Procesa cada MATCH_ID extraído
-          for MATCH_ID in $MATCH_IDS; do
-            # Validar que el ID no esté vacío
-            if [ -z "$MATCH_ID" ]; then
+          date_input="${{ github.event.inputs.date }}"
+          if [ -z "${date_input:-}" ]; then
+            PROCESS_DATE="$(date -u +%F)"
+          else
+            PROCESS_DATE="$date_input"
+          fi
+          echo "Processing date: $PROCESS_DATE"
+
+          echo "Running match finder..."
+          OUTPUT="$(python -m engine.match_finder "$PROCESS_DATE" 2>&1 || true)"
+          echo "Raw output of match_finder:"
+          echo "$OUTPUT"
+
+          mapfile -t RAW_IDS < <(echo "$OUTPUT" | grep -oE 'MATCH_ID:mt_[0-9]+' || true)
+
+          if [ "${#RAW_IDS[@]}" -eq 0 ]; then
+            echo "::error::No se encontraron MATCH_ID válidos en la salida. Aborting."
+            exit 1
+          fi
+
+          echo "Found ${#RAW_IDS[@]} match(es). Preparing to iterate..."
+
+          for raw in "${RAW_IDS[@]}"; do
+            mt_part="$(echo "$raw" | sed -E 's/^MATCH_ID://')"
+            clean_id="$(echo "$mt_part" | sed -E 's/^mt_//' | sed -E 's/^0+//')"
+
+            if [ -z "$clean_id" ]; then
+              echo "::warning::El ID '$raw' se limpió a vacío — se omite."
               continue
             fi
 
-            echo -e "\n$print_line"
-            echo "🚀 PROCESANDO PARTIDO ID: $MATCH_ID"
-            echo -e "$print_line\n"
-            
-            # Ejecutamos la proyección CatBoost + LSTM asignando el ID dinámicamente
-            MATCH_ID=$MATCH_ID python main.py
-            
-            # Capturar errores de ejecución sin detener el pipeline
-            if [ $? -ne 0 ]; then
-              echo "⚠️ Advertencia: Error procesando el partido $MATCH_ID, continuando con el siguiente..."
+            export MATCH_ID="$clean_id"
+            echo "==== Running analysis for MATCH_ID=$MATCH_ID ===="
+            if ! python main.py; then
+              echo "::error::Analysis failed for MATCH_ID=$MATCH_ID"
+              exit 1
             fi
+            echo "==== Finished analysis for MATCH_ID=$MATCH_ID ===="
           done
-          
-          echo -e "\n✅ Finalizado el procesamiento de la jornada completa de forma automatizada."
+
+          echo "All analyses completed successfully."
